@@ -10,9 +10,13 @@ joern_slice=~/bin/joern/joern-cli/joern-slice
 joern_vectors=~/bin/joern/joern-cli/joern-vectors
 
 rm -rf ./workspace/
+rm -rf ./output/
 
-${joern} -J-Xmx10G --script extract_implementation.sc > /dev/null 2>&1
+mkdir output
+
+# ${joern} -J-Xmx10G --script extract_implementation.sc > /dev/null 2>&1
+${joern} -J-Xmx10G --script create_data.sc > /dev/null 2>&1
 
 printf 'Done!\n'
 
-bat call_stack_trace.txt
+# bat call_stack_trace.txt

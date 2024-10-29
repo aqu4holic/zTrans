@@ -2,3 +2,6 @@ inputcode/
 workspace/
 venv/
 .venv/
+python.nix
+.envrc
+data/
