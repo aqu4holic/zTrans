@@ -5,3 +5,5 @@ venv/
 python.nix
 .envrc
 data/
+inputcode/
+output/
