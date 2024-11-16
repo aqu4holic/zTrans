@@ -3,6 +3,7 @@ from typing import List, Tuple, Dict, Any
 import subprocess
 from threading import Thread
 import copy
+import argparse
 
 process_cnt: int = 10
 thread_cnt: int = 20
@@ -16,9 +17,15 @@ output_queue: Dict[str, Any] = {i: None for i in range(process_cnt)}
 data_prefix: str = 'data'
 repo_prefix: str = f'{data_prefix}/repos'
 
-data_name: str = '500_sampled_no_code.parquet'
+parser = argparse.ArgumentParser(description = 'Process a file.')
+parser.add_argument('--filename', nargs = '?', default = 'sampled_no_code.parquet', help = 'The name of the file to process')
+parser.add_argument('--output', nargs = '?', default = 'sampled_code.parquet', help = 'The name of the file to output')
+args = parser.parse_args()
 
-repo_df: pd.DataFrame = pd.read_parquet(f'{data_prefix}/{data_name}', engine = 'fastparquet')
+data_name: str = args.filename
+output_name: str = args.output
+
+repo_df: pd.DataFrame = pd.read_parquet(f'{data_prefix}/{data_name}', engine = 'pyarrow')
 
 # define template to crawl data
 get_prev_commit_template: str = '''
@@ -52,6 +59,7 @@ necessary_cols: List[str] = [
     'repoName',
     'repoOwner',
     'repoSplitName',
+    'prevCommit',
     'startCommit',
     'endCommit',
     'fileName',
@@ -65,8 +73,8 @@ sample_template: Dict[str, Any] = {k: None for k in necessary_cols}
 final_df: pd.DataFrame = pd.DataFrame(columns = necessary_cols)
 # final_df.set_index(id)
 
-def get_prev_commit(repo_prefix: str, repo_name: str, changed_commit: str) -> str:
-    get_prev_commit_script: str = get_prev_commit_template.format(repo_prefix, repo_name, changed_commit)
+def get_prev_commit(repo_prefix: str, repo_name: str, commit: str) -> str:
+    get_prev_commit_script: str = get_prev_commit_template.format(repo_prefix, repo_name, commit)
     sub: subprocess.CompletedProcess = subprocess.run(get_prev_commit_script, shell = True, capture_output = True, encoding = 'utf-8', errors = 'ignore')
 
     prev_commit: str = sub.stdout.strip()
@@ -82,23 +90,15 @@ def get_diff_2_commit(repo_prefix: str, repo_name: str, commit1: str, commit2: s
 
     return diff_files
 
-def get_start_end_commit_code(repo_prefix: str, repo_name: str, file_name: str, start_commit: str, end_commit: str) -> Tuple[str, str]:
+def get_file_at_commit(repo_prefix: str, repo_name: str, file_name: str, commit: str) -> str:
     try:
-        get_file_script: str = get_file_at_commit_template.format(repo_prefix, repo_name, start_commit, file_name)
+        get_file_script: str = get_file_at_commit_template.format(repo_prefix, repo_name, commit, file_name)
         sub: subprocess.CompletedProcess = subprocess.run(get_file_script, shell = True, capture_output = True, encoding = 'utf-8', errors = 'ignore')
-        start_commit_code: str = sub.stdout
+        file_content: str = sub.stdout
     except Exception as e:
-        start_commit_code: str = ''
+        file_content: str = ''
 
-
-    try:
-        get_file_script: str = get_file_at_commit_template.format(repo_prefix, repo_name, end_commit, file_name)
-        sub: subprocess.CompletedProcess = subprocess.run(get_file_script, shell = True, capture_output = True, encoding='utf-8', errors='ignore')
-        end_commit_code: str = sub.stdout
-    except Exception as e:
-        end_commit_code: str = ''
-
-    return start_commit_code, end_commit_code
+    return file_content
 
 def get_diff_file(repo_prefix: str, repo_name: str, file_name: str, start_commit: str, end_commit: str) -> str:
     get_diff_file_script: str = get_diff_file_template.format(repo_prefix, repo_name, start_commit, end_commit, file_name)
@@ -128,8 +128,8 @@ class get_file_by_thread(Thread):
         start_commit = self.start_commit
         end_commit = self.end_commit
 
-        start_code, end_code = get_start_end_commit_code(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name,
-                                                                start_commit = start_commit, end_commit = end_commit)
+        start_code = get_file_at_commit(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name, commit = start_commit)
+        end_code = get_file_at_commit(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name, commit = end_commit)
 
         diff = get_diff_file(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name,
                             start_commit = start_commit, end_commit = end_commit)
@@ -152,52 +152,63 @@ def create_data_rows(samples: pd.DataFrame, repo_name: str, sample_template: Dic
         'toLib': samples.iloc[0]['toLib'],
         'repoOwner': samples.iloc[0]['repoOwner'],
         'repoSplitName': samples.iloc[0]['repoSplitName'],
-        'startCommit': samples.iloc[0]['startCommit'],
-        'endCommit': samples.iloc[0]['endCommit'],
         'startCode': '',
         'endCode': '',
-        'startCommitChanges': samples.iloc[0]['startCommitChanges'],
-        'endCommitChanges': samples.iloc[0]['endCommitChanges']
     })
 
-    # get unique startCommit values for this repository's samples
-    changed_commits: List[str] = samples['startCommit'].unique().tolist()
+    # get unique endCommit values for this repository's samples
+    end_commits: List[str] = samples['endCommit'].unique().tolist()
 
     res_df: pd.DataFrame = pd.DataFrame(columns = necessary_cols)
 
     # get the diff of each commit and its previous commib
-    for commit_id in range(len(changed_commits)):
-        changed_commit: str = changed_commits[commit_id]
+    for end_commit_id in range(len(end_commits)):
+        end_commit: str = end_commits[end_commit_id]
 
-        # get the previous commit hash and the diff
-        prev_commit: str = get_prev_commit(repo_prefix = repo_prefix, repo_name = repo_name, changed_commit = changed_commit)
-        diff_files: str = get_diff_2_commit(repo_prefix = repo_prefix, repo_name = repo_name,
-                                        commit1 = changed_commit, commit2 = prev_commit)
+        # filter out samples with that endCommit
+        filtered_samples = samples[samples['endCommit'] == end_commit]
+        start_commits = filtered_samples['startCommit'].unique()
 
-        for file_name in diff_files:
-            try:
-                start_code, end_code = get_start_end_commit_code(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name,
-                                                                start_commit = prev_commit, end_commit = changed_commit)
-                diff = get_diff_file(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name,
-                                    start_commit = prev_commit, end_commit = changed_commit)
-            except Exception as e:
-                print(e)
-                print(f'file: {file_name}')
-                print(f'start: {prev_commit}, end: {changed_commit}')
-                print(f'start code: {start_code}')
-                print(f'end code: {end_code}')
-                print('-' * 50)
+        for start_commit_id in range(len(start_commits)):
+            start_commit = start_commits[start_commit_id]
 
-                return None
+            single_sample = filtered_samples[filtered_samples['startCommit'] == start_commit].iloc[0]
 
-            sample_template['id'] = sample_cnt
-            sample_template['fileName'] = file_name
-            sample_template['startCode'], sample_template['endCode'] = str_normalize(start_code), str_normalize(end_code)
-            sample_template['diff'] = diff
+            # get the previous commit hash and the diff
+            prev_commit: str = get_prev_commit(repo_prefix = repo_prefix, repo_name = repo_name, commit = start_commit)
+            diff_files: str = get_diff_2_commit(repo_prefix = repo_prefix, repo_name = repo_name,
+                                            commit1 = end_commit, commit2 = prev_commit)
 
-            res_df = pd.concat([res_df, pd.DataFrame([sample_template], columns = necessary_cols)], ignore_index = True)
+            for file_name in diff_files:
+                try:
+                    start_code = get_file_at_commit(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name, commit = start_commit)
+                    end_code = get_file_at_commit(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name, commit = end_commit)
 
-            sample_cnt += 1
+                    diff = get_diff_file(repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name,
+                                        start_commit = prev_commit, end_commit = end_commit)
+                except Exception as e:
+                    print(e)
+                    print(f'file: {file_name}')
+                    print(f'start: {prev_commit}, end: {end_commit}')
+                    print(f'start code: {start_code}')
+                    print(f'end code: {end_code}')
+                    print('-' * 50)
+
+                    return None
+
+                sample_template['id'] = sample_cnt
+                sample_template['fileName'] = file_name
+                sample_template['prevCommit'] = prev_commit
+                sample_template['startCommit'] = start_commit
+                sample_template['endCommit'] = end_commit
+                sample_template['startCommitChanges'] = single_sample['startCommitChanges']
+                sample_template['endCommitChanges'] = single_sample['endCommitChanges']
+                sample_template['startCode'], sample_template['endCode'] = str_normalize(start_code), str_normalize(end_code)
+                sample_template['diff'] = str(diff)
+
+                res_df = pd.concat([res_df, pd.DataFrame([sample_template], columns = necessary_cols)], ignore_index = True)
+
+                sample_cnt += 1
 
     return sample_cnt, res_df
 
@@ -210,16 +221,12 @@ def create_data_rows_by_thread(_pid: int, samples: pd.DataFrame, repo_name: str,
         'toLib': samples.iloc[0]['toLib'],
         'repoOwner': samples.iloc[0]['repoOwner'],
         'repoSplitName': samples.iloc[0]['repoSplitName'],
-        'startCommit': samples.iloc[0]['startCommit'],
-        'endCommit': samples.iloc[0]['endCommit'],
         'startCode': '',
         'endCode': '',
-        'startCommitChanges': samples.iloc[0]['startCommitChanges'],
-        'endCommitChanges': samples.iloc[0]['endCommitChanges']
     })
 
-    # get unique startCommit values for this repository's samples
-    changed_commits: List[str] = samples['startCommit'].unique().tolist()
+    # get unique endCommit values for this repository's samples
+    end_commits: List[str] = samples['endCommit'].unique().tolist()
 
     res_df: pd.DataFrame = pd.DataFrame(columns = necessary_cols)
 
@@ -228,40 +235,54 @@ def create_data_rows_by_thread(_pid: int, samples: pd.DataFrame, repo_name: str,
     file_queue = []
 
     # get the diff of each commit and its previous commib
-    for commit_id in range(len(changed_commits)):
-        changed_commit: str = changed_commits[commit_id]
+    for end_commit_id in range(len(end_commits)):
+        end_commit: str = end_commits[end_commit_id]
 
-        # get the previous commit hash and the diff
-        prev_commit: str = get_prev_commit(repo_prefix = repo_prefix, repo_name = repo_name, changed_commit = changed_commit)
-        diff_files: str = get_diff_2_commit(repo_prefix = repo_prefix, repo_name = repo_name,
-                                        commit1 = changed_commit, commit2 = prev_commit)
+        # filter out samples with that endCommit
+        filtered_samples = samples[samples['endCommit'] == end_commit]
+        start_commits = filtered_samples['startCommit'].unique()
 
-        for file_name in diff_files:
-            thread: Thread = get_file_by_thread(_pid = _pid, id = sample_cnt, repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name,
-                                                start_commit = prev_commit, end_commit = changed_commit)
-            threads[_pid].append(thread)
-            file_queue.append(file_name)
+        for start_commit_id in range(len(start_commits)):
+            start_commit = start_commits[start_commit_id]
 
-            sample_cnt += 1
+            single_sample = filtered_samples[filtered_samples['startCommit'] == start_commit].iloc[0]
 
-            if ((len(threads[_pid]) == thread_cnt) or (file_name == diff_files[-1])):
-                for thread in threads[_pid]:
-                    thread.start()
+            # get the previous commit hash and the diff
+            prev_commit: str = get_prev_commit(repo_prefix = repo_prefix, repo_name = repo_name, commit = start_commit)
+            diff_files: str = get_diff_2_commit(repo_prefix = repo_prefix, repo_name = repo_name,
+                                            commit1 = end_commit, commit2 = prev_commit)
 
-                for thread in threads[_pid]:
-                    thread.join()
+            for file_name in diff_files:
+                thread: Thread = get_file_by_thread(_pid = _pid, id = sample_cnt, repo_prefix = repo_prefix, repo_name = repo_name, file_name = file_name,
+                                                    start_commit = prev_commit, end_commit = end_commit)
+                threads[_pid].append(thread)
+                file_queue.append(file_name)
 
-                for key in file_queue:
-                    current_sample_template['id'] = output_queue_str[_pid][key][0]
-                    current_sample_template['fileName'] = key
-                    current_sample_template['startCode'], current_sample_template['endCode'] = str_normalize(output_queue_str[_pid][key][1]), str_normalize(output_queue_str[_pid][key][2])
-                    current_sample_template['diff'] = str_normalize(output_queue_str[_pid][key][3])
+                sample_cnt += 1
 
-                    res_df = pd.concat([res_df, pd.DataFrame([current_sample_template], columns = necessary_cols)], ignore_index = True)
+                if ((len(threads[_pid]) == thread_cnt) or (file_name == diff_files[-1])):
+                    for thread in threads[_pid]:
+                        thread.start()
 
-                output_queue_str[_pid] = {}
-                threads[_pid] = []
-                file_queue = []
+                    for thread in threads[_pid]:
+                        thread.join()
+
+                    for key in file_queue:
+                        current_sample_template['id'] = output_queue_str[_pid][key][0]
+                        current_sample_template['fileName'] = key
+                        current_sample_template['startCode'], current_sample_template['endCode'] = str_normalize(output_queue_str[_pid][key][1]), str_normalize(output_queue_str[_pid][key][2])
+                        current_sample_template['prevCommit'] = prev_commit
+                        current_sample_template['startCommit'] = start_commit
+                        current_sample_template['endCommit'] = end_commit
+                        current_sample_template['startCommitChanges'] = single_sample['startCommitChanges']
+                        current_sample_template['endCommitChanges'] = single_sample['endCommitChanges']
+                        current_sample_template['diff'] = str_normalize(output_queue_str[_pid][key][3])
+
+                        res_df = pd.concat([res_df, pd.DataFrame([current_sample_template], columns = necessary_cols)], ignore_index = True)
+
+                    output_queue_str[_pid] = {}
+                    threads[_pid] = []
+                    file_queue = []
 
     return sample_cnt, res_df
 
@@ -307,6 +328,15 @@ for repo_name_id in range(len(unique_repos)):
 
     # sample_cnt, res_df = create_data_rows(samples = samples, repo_name = repo_name, sample_cnt = 0)
     # print(len(res_df))
+    # # break
+
+    # proc.start()
+    # proc.join()
+
+    # res_df2 = output_queue[_pid]
+
+    # print(res_df.equals(res_df2))
+
     # break
 
     if ((len(processes) == process_cnt) or (repo_name_id == len(unique_repos) - 1)):
@@ -324,16 +354,18 @@ for repo_name_id in range(len(unique_repos)):
         processes = []
 
         final_df['id'] = final_df.index
-        final_df.to_parquet(f'{data_prefix}/first_dataset.parquet')
+        final_df.to_parquet(f'{data_prefix}/{output_name}')
 
         print()
-        print('()' * 25)
-        print(' ' * 20 + f'finished: {repo_name_id + 1}/{len(unique_repos)}')
-        print(' ' * 20 + f'len: {len(final_df)}')
-        print(' ' * 20 + f'checkpointed!')
-        print('()' * 25)
+        print('()' * 50)
+        print(' ' * 40 + f'finished: {repo_name_id + 1}/{len(unique_repos)}')
+        print(' ' * 40 + f'{output_name} len: {len(final_df)}')
+        print(' ' * 40 + f'checkpointed!')
+        print('()' * 50)
         print()
+
+        # break
 
 final_df['id'] = final_df.index
-print(f'finished: {len(final_df)} line(s)')
-final_df.to_parquet(f'{data_prefix}/first_dataset.parquet')
+print(f'finished {output_name}: {len(final_df)} line(s)')
+final_df.to_parquet(f'{data_prefix}/{output_name}')

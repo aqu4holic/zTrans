@@ -15,4 +15,4 @@ peft
 scikit-learn
 scipy
 matplotlib
-fastparquet
+pyarrow

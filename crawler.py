@@ -10,7 +10,9 @@ np.random.seed(seed)
 data_prefix = 'data'
 repo_prefix = f'{data_prefix}/repos'
 
-repo_df = pd.read_parquet(f'{data_prefix}/500_sampled_no_code.parquet', engine = 'fastparquet')
+data_name = 'errors.parquet'
+
+repo_df = pd.read_parquet(f'{data_prefix}/{data_name}', engine = 'pyarrow')
 
 unique_repos = repo_df['repoName'].unique()
 
