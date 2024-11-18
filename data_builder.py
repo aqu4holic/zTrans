@@ -8,8 +8,8 @@ import argparse
 process_cnt: int = 10
 thread_cnt: int = 20
 
-threads: List[Any] = [[] for i in range(process_cnt)]
-output_queue_str: List[Any] = [{} for i in range(process_cnt)]
+threads: List[Any] = [[] for i in range(thread_cnt)]
+output_queue_str: List[Any] = [{} for i in range(thread_cnt)]
 
 processes: List[Any] = []
 output_queue: Dict[str, Any] = {i: None for i in range(process_cnt)}

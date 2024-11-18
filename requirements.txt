@@ -16,3 +16,6 @@ scikit-learn
 scipy
 matplotlib
 pyarrow
+tree-sitter
+tree-sitter-java
+tree-sitter-languages
