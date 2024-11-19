@@ -232,12 +232,12 @@ def method_statistics_multi_thread(data_df: pd.DataFrame, tokenizer: AutoTokeniz
     for id in tqdm(range(len(data_df)), desc = 'Processing method', total = len(data_df)):
         sample = data_df.iloc[id]
         thread = get_method_data_by_thread(sample = sample, id = id, tokenizer = tokenizer)
-        # thread.start()
+        thread.start()
         threads.append(thread)
 
         if (len(threads) % thread_cnt == 0 or id == len(data_df) - 1):
-            for thread in threads:
-                thread.start()
+            # for thread in threads:
+            #     thread.start()
             for thread in threads:
                 thread.join()
 

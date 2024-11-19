@@ -2,8 +2,10 @@ import pandas as pd
 from typing import List, Tuple, Dict, Any
 import subprocess
 from threading import Thread
+from tqdm import tqdm
 import copy
 import argparse
+import time
 
 process_cnt: int = 10
 thread_cnt: int = 20
@@ -315,7 +317,7 @@ print(f'repo count: {len(unique_repos)}')
 print(f'-' * 50)
 print()
 
-for repo_name_id in range(len(unique_repos)):
+for repo_name_id in tqdm(range(len(unique_repos)), desc = 'Processing repository', total = len(unique_repos)):
     repo_name: str = unique_repos[repo_name_id]
 
     # filter the DataFrame for the current repository's samples
@@ -324,6 +326,7 @@ for repo_name_id in range(len(unique_repos)):
 
     _pid: int = repo_name_id % process_cnt
     proc: Thread = create_data_rows_by_process(_pid = _pid, repo_name = repo_name, samples = samples)
+    proc.start()
     processes.append(proc)
 
     # sample_cnt, res_df = create_data_rows(samples = samples, repo_name = repo_name, sample_cnt = 0)
@@ -340,8 +343,8 @@ for repo_name_id in range(len(unique_repos)):
     # break
 
     if ((len(processes) == process_cnt) or (repo_name_id == len(unique_repos) - 1)):
-        for proc in processes:
-            proc.start()
+        # for proc in processes:
+        #     proc.start()
 
         for proc in processes:
             proc.join()
@@ -353,13 +356,17 @@ for repo_name_id in range(len(unique_repos)):
         output_queue = {i: None for i in range(process_cnt)}
         processes = []
 
+    if (((repo_name_id + 1) % 250 == 0) or (repo_name_id == len(unique_repos) - 1)):
+        start_time = time.time()
         final_df['id'] = final_df.index
         final_df.to_parquet(f'{data_prefix}/{output_name}')
+        end_time = time.time()
 
         print()
         print('()' * 50)
         print(' ' * 40 + f'finished: {repo_name_id + 1}/{len(unique_repos)}')
         print(' ' * 40 + f'{output_name} len: {len(final_df)}')
+        print(' ' * 40 + f'time saved: {end_time - start_time:.2f} sec')
         print(' ' * 40 + f'checkpointed!')
         print('()' * 50)
         print()

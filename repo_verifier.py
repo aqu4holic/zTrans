@@ -4,9 +4,10 @@ import subprocess
 from threading import Thread
 import copy
 import argparse
+from tqdm import tqdm
 
 process_cnt: int = 10
-thread_cnt: int = 20
+thread_cnt: int = 50
 
 threads: List[Any] = []
 output_queue_str: List[Any] = [{} for i in range(thread_cnt)]
@@ -29,7 +30,9 @@ repo_df: pd.DataFrame = pd.read_parquet(f'{data_prefix}/{data_name}', engine = '
 
 # define template to crawl data
 get_status_template: str = '''
-git status {}/{}
+cd {}/{}
+git status .
+git config --get remote.origin.url
 '''
 
 output: Dict[str, Any] = {}
@@ -71,7 +74,7 @@ def main():
     print(f'-' * 50)
     print()
 
-    for id in range(len(unique_repos)):
+    for id in tqdm(range(len(unique_repos)), desc = 'Processing'):
         repo_id: str = unique_repos[id]
 
         repo_owner, repo_name = repo_id.split('_', 1)
@@ -79,11 +82,12 @@ def main():
         thread_id: int = id % thread_cnt
 
         thread: get_repo_status_by_thread = get_repo_status_by_thread(repo_prefix, repo_id)
+        thread.start()
         threads.append(thread)
 
         if (len(threads) == thread_cnt) or (id == len(unique_repos) - 1):
-            for thread in threads:
-                thread.start()
+            # for thread in threads:
+            #     thread.start()
             for thread in threads:
                 thread.join()
 
