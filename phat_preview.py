@@ -10,7 +10,6 @@ import numpy as np
 from tqdm import tqdm
 from typing import List, Tuple, Dict, Any
 import time
-import argparse
 
 seed = 18022004
 np.random.seed(seed)
@@ -28,23 +27,23 @@ model_id: str = 'deepseek-ai/deepseek-coder-6.7b-instruct'
 # ## init data
 
 # %%
-
-parser = argparse.ArgumentParser(description = 'Process a file.')
-parser.add_argument('--filename', nargs = '?', default = 'sampled_no_code.parquet', help = 'The name of the file to process')
-parser.add_argument('--output', nargs = '?', default = 'sampled_code.parquet', help = 'The name of the file to output')
-args = parser.parse_args()
-
 # data_name = 'ori_data_method_treesitter.parquet'
-data_name: str = args.filename
-output_name: str = args.output
+data_name = 'migration_others_method_no_code.parquet'
 
-start_time: float = time.time()
+start_time = time.time()
 data_df: pd.DataFrame = pd.read_parquet(f'{data_prefix}/{data_name}', engine = 'pyarrow')
-end_time: float = time.time()
+end_time = time.time()
 print(f'Data loaded: {data_df.shape}')
 print(f'Time: {end_time - start_time:.2f}s')
 print('-' * 100)
 
+print(data_df.columns)
+
+data_df = data_df.drop(columns = ['startCode_cleaned', 'endCode_cleaned',], axis = 1)
+
+data_df.to_parquet(f'{data_prefix}/migration_others_method_no_code.parquet', engine = 'pyarrow')
+
+exit()
 # %% [markdown]
 # # statistics
 
@@ -275,9 +274,9 @@ def method_statistics_multi_thread(data_df: pd.DataFrame, tokenizer: AutoTokeniz
         #     print('-' * 100)
 
     start_time = time.time()
-    data_df.to_parquet(f'{data_prefix}/{output_name}', engine = 'pyarrow')
+    data_df.to_parquet(f'{data_prefix}/migration_others_method_statistics.parquet', engine = 'pyarrow')
     end_time = time.time()
-    print(f'Saved {len(data_df)} samples @ {data_prefix}/{output_name}')
+    print(f'Saved {len(data_df)} samples @ {data_prefix}/migration_others_method_statistics.parquet')
     print(f'Time: {end_time - start_time:.2f}s')
     print('-' * 100)
 

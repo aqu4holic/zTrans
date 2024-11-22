@@ -3,6 +3,8 @@ import pandas as pd
 from tree_sitter import Language, Parser
 import tree_sitter_java as tsjava
 import difflib
+from typing import Any, Dict, List
+import time
 
 from tqdm import tqdm
 
@@ -10,57 +12,91 @@ from tqdm import tqdm
 # Initialize the parser and set the Java language
 JAVA_LANGUAGE = Language(tsjava.language())
 parser = Parser(JAVA_LANGUAGE)
-def extract_methods_with_body(java_code):
-    methods = []
+
+def extract_method_details(node, class_name, source_code):
+    method_details = {
+        'class_name': class_name,
+        'body': '',
+        'modifiers': '',
+        'return_type': '',
+        'name': '',
+        'parameters': '',
+        'signature': '',
+    }
+
+    start_byte, end_byte = node.start_byte, node.end_byte
+    method_details['body'] = source_code[start_byte:end_byte].decode('utf-8', errors = 'replace')
+
+    for child in node.children:
+        if (child.type == 'modifiers'):
+            method_details['modifiers'] = ' '.join([modifier.text.decode('utf-8') for modifier in child.children])
+        elif ('type' in child.type):  # Return type
+            method_details['return_type'] = child.text.decode('utf-8')
+        elif (child.type == 'identifier'):  # Method name
+            method_details['name'] = child.text.decode('utf-8')
+        elif (child.type.endswith('parameters')):  # Parameter list
+            param_string = ', '.join([param.text.decode('utf-8') for param in child.children if param.type.endswith('parameter')])
+            method_details['parameters'] = param_string
+
+    method_details['signature'] = f'{method_details["modifiers"]} {method_details["return_type"]} {method_details["name"]}({method_details["parameters"]})'
+    method_details['signature_no_mod'] = f'{method_details["return_type"]} {method_details["name"]}({method_details["parameters"]})'
+
+    return method_details
+
+nested_class = []
+
+def extract_methods_with_body(java_code, index):
     # print('java_code :',java_code)
+
+    def has_errors(node):
+        if node.type == 'ERROR':
+            return True
+        return any(has_errors(child) for child in node.children)
+
+    def dfs_find_methods(index, node: Any, encoded_code, class_context: List[str] = None, ) -> List[Dict[str, Any]]:
+        '''Perform DFS to find all method_declaration nodes and their enclosing class hierarchy.'''
+        if class_context is None:
+            class_context = []
+
+        if (len(class_context) > 1):
+            nested_class.append(index)
+
+        method_details = []
+
+        # If the node is a class, update the class context
+        if node.type == 'class_declaration':
+            class_name = None
+            for child in node.children:
+                if child.type == 'identifier':  # Class name
+                    class_name = child.text.decode('utf-8')
+                    break
+            if class_name:
+                class_context.append(class_name)
+
+        # If the node is a method, extract its details with the full class hierarchy
+        if node.type == 'method_declaration':
+            full_class_name = '.'.join(class_context)  # Concatenate class names to show the hierarchy
+            method_details.append(extract_method_details(node = node, class_name = full_class_name, source_code = encoded_code,))
+
+        # Recursively process all children
+        for child in node.children:
+            method_details.extend(dfs_find_methods(index, child, encoded_code, class_context[:]))  # Pass a copy of class context
+
+        # If the node is a class, pop the class name after processing its children
+        if node.type == 'class_declaration' and class_context:
+            class_context.pop()
+
+        return method_details
+
     try:
-        try:
-            java_code = java_code.encode('utf-8')
-        except Exception as e:
-            print(e)
-        tree = parser.parse(java_code)
+        encoded_code = java_code.encode('utf-8')
+        tree = parser.parse(encoded_code)
         root_node = tree.root_node
-        # Function to extract code from a node
-        def extract_code(source_code, node):
-            start_byte = node.start_byte
-            end_byte = node.end_byte
-            return source_code[start_byte:end_byte].decode("utf-8")
 
-        # Traverse the syntax tree and find the method declaration
-        for child in root_node.children:
-            if child.type == "class_declaration":
-                for class_child in child.children:
-                    if class_child.type == "class_body":
-                        for body_child in class_child.children:
-                            if body_child.type == "method_declaration":
-                                # Check for valid method declaration without errors
-                                if not any(c.type == "ERROR" for c in body_child.children):
-                                    method_name = ""
-                                    method_signature = ""
-                                    method_body = ""
-                                    modifiers = []
-                                    return_type = ""
+        if (has_errors(root_node)):
+            raise Exception('Parsing errors found in the code')
 
-                                    # Extract components of the method declaration
-                                    for method_child in body_child.children:
-                                        if method_child.type == "modifiers":
-                                            modifiers = [extract_code(java_code, modifier) for modifier in method_child.children]
-                                        elif method_child.type in ["type", "type_identifier", "scoped_type_identifier"]:  # Handle nested type nodes
-                                            return_type = extract_code(java_code, method_child)
-                                        elif method_child.type == "identifier":  # Capture method name
-                                            method_name = extract_code(java_code, method_child)
-                                        elif method_child.type == "formal_parameters":  # Capture parameters
-                                            parameters = extract_code(java_code, method_child)
-                                            method_signature = f"{' '.join(modifiers)} {return_type} {method_name}{parameters}"
-                                    method_body = extract_code(java_code, body_child)
-                                    methods.append({
-                                        "name": method_name,
-                                        "signature": method_signature.strip(),
-                                        "body": method_body
-                                    })
-
-
-        return methods
+        return dfs_find_methods(index, root_node, encoded_code)
     except Exception as e:
         print('Loi :' ,e)
         return None
@@ -68,33 +104,60 @@ def extract_methods_with_body(java_code):
 # Function to remove comments
 def remove_comments(java_code: str) -> str:
     # Parse the code
-    tree = parser.parse(bytes(java_code, "utf8"))
+    tree = parser.parse(java_code.encode('utf-8'))
     root_node = tree.root_node
 
     # Gather ranges of comment nodes
     comment_ranges = []
     def visit_node(node):
-        if node.type in {"line_comment", "block_comment"}:
-            comment_ranges.append((node.start_byte, node.end_byte))
+        if node.type in {'line_comment', 'block_comment'}:
+            comment_ranges.append((node.start_byte, node.end_byte, node.type))
         for child in node.children:
             visit_node(child)
 
     visit_node(root_node)
 
     # Remove comments by excluding their byte ranges
-    result_code = bytearray(java_code, "utf8")
-    for start, end in reversed(comment_ranges):  # Reverse to avoid shifting indices
-        del result_code[start:end]
+    result_code = bytearray(java_code, 'utf-8')
+    for start, end, comment_type in reversed(comment_ranges):  # Reverse to avoid shifting indices
+        if comment_type == 'block_comment':
+            # Replace block comment with spaces
+            result_code[start:end] = b' ' * (end - start + 1)
+        else:
+            # Remove line comments entirely
+        #     # del result_code[start:end]
+            result_code[start:end] = b' ' * (end - start + 1)
+        # del result_code[start:end]
 
-    return result_code.decode("utf8")
+    return result_code.decode('utf-8').strip()
 
 def diff_methods(methods_start, methods_end):
-    """
+    '''
     Compare methods based on their full dictionaries (e.g., name, signature, body).
-    """
+    '''
     # Normalize methods for comparison
-    normalized_start = [{key: method[key].strip() if isinstance(method[key], str) else method[key] for key in method} for method in methods_start]
-    normalized_end = [{key: method[key].strip() if isinstance(method[key], str) else method[key] for key in method} for method in methods_end]
+    def normalize_methods(methods):
+        res = []
+        for method in methods:
+            sub_method = {}
+
+            sub_method['class_name'] = method['class_name'].strip()
+            sub_method['name'] = method['name'].strip()
+            sub_method['body'] = method['body'].strip()
+            sub_method['modifiers'] = method['modifiers'].strip()
+            sub_method['return_type'] = method['return_type'].strip()
+            sub_method['parameters'] = method['parameters'].strip()
+            sub_method['signature'] = method['signature'].strip()
+            sub_method['signature_no_mod'] = method['signature_no_mod'].strip()
+
+            res.append(sub_method)
+
+        return res
+
+    normalized_start = normalize_methods(methods_start)
+    normalized_end = normalize_methods(methods_end)
+    # normalized_start = [{key: method[key].strip() if isinstance(method[key], str) else method[key] for key in method} for method in methods_start]
+    # normalized_end = [{key: method[key].strip() if isinstance(method[key], str) else method[key] for key in method} for method in methods_end]
 
     # Convert lists of methods to sets of frozensets for comparison
     set_start = set(frozenset(item.items()) for item in normalized_start)
@@ -106,15 +169,16 @@ def diff_methods(methods_start, methods_end):
     unchanged_methods = [dict(items) for items in (set_start & set_end)]  # Methods in both
 
     return {
-        "removed": removed_methods,
-        "added": added_methods,
-        "unchanged": unchanged_methods,
+        'removed': removed_methods,
+        'added': added_methods,
+        'unchanged': unchanged_methods,
     }
 
 def check_same_methods(method1, method2):
-    name_method1 = method1.split('(')[0]
-    name_method2 = method2.split('(')[0]
-    return name_method1 == name_method2
+    '''
+    Check if two methods are the same based on their full dictionaries.
+    '''
+    return (method1['signature'] == method2['signature']) and (method1['class_name'] == method2['class_name'])
 
 import pandas as pd
 
@@ -132,35 +196,46 @@ def get_diff(string1, string2):
     return '\n'.join(diff)
 
 def process_and_expand_data(data):
-    # t = ""
-    """
+    # t = ''
+    '''
     Hàm xử lý và mở rộng DataFrame gốc bằng cách thêm các cột methods_before và methods_after.
-    """
+    '''
     expanded_data = []
-    count = 0
     total_methods_before = []
     total_methods_after = []
+    errors = []
     for index in tqdm(range(len(data)), desc = 'parsing data'):
         try:
-            row = data.iloc[index]
+            row = data.iloc[index].copy()
 
             startCode = row['startCode']
             endCode = row['endCode']
-            startCode_clean = remove_comments(startCode)
-            endCode_clean = remove_comments(endCode)
 
-            data.at[index, 'startCode_cleaned'] = startCode_clean
-            data.at[index, 'endCode_cleaned'] = endCode_clean
+            # with open('before.txt', 'w') as file:
+            #     file.write(startCode)
+            # with open('after.txt', 'w') as file:
+            #     file.write(endCode)
 
-            methods_start = extract_methods_with_body(startCode_clean)
-            methods_end = extract_methods_with_body(endCode_clean)
+            startCode_cleaned = remove_comments(startCode)
+            endCode_cleaned = remove_comments(endCode)
+
+            row['startCode_cleaned'] = startCode_cleaned
+            row['endCode_cleaned'] = endCode_cleaned
+
+            with open('before_cleaned.txt', 'w') as file:
+                file.write(startCode_cleaned)
+            with open('after_cleaned.txt', 'w') as file:
+                file.write(endCode_cleaned)
+
+            methods_start = extract_methods_with_body(startCode_cleaned, index)
+            methods_end = extract_methods_with_body(endCode_cleaned, index)
 
             total_methods_before = len(methods_start)
             total_methods_after = len(methods_end)
 
             diff_result = diff_methods(methods_start, methods_end)
-            removed = diff_result["removed"]
-            added = diff_result["added"]
+            removed = diff_result['removed']
+            added = diff_result['added']
 
             row_changes = []
             remaining_added = list(added)
@@ -168,27 +243,135 @@ def process_and_expand_data(data):
             for method1 in removed:
                 have_func = False
                 for method2 in list(remaining_added):
-                    if check_same_methods(method1['body'], method2['body']):
-                        row_changes.append([method1['body'], method2['body'],method1['name'],method1['signature']])
+                    if check_same_methods(method1, method2):
+                        row_changes.append(
+                            [
+                                method1['class_name'],
+                                method2['class_name'],
+
+                                method1['name'],
+                                method2['name'],
+
+                                method1['body'],
+                                method2['body'],
+
+                                method1['modifiers'],
+                                method2['modifiers'],
+
+                                method1['return_type'],
+                                method2['return_type'],
+
+                                method1['parameters'],
+                                method2['parameters'],
+
+                                method1['signature'],
+                                method2['signature'],
+
+                                method1['signature_no_mod'],
+                                method2['signature_no_mod'],
+                            ]
+                        )
                         remaining_added.remove(method2)
                         have_func = True
                         break
                 if have_func == False:
-                    row_changes.append([method1['body'],'',method1['name'],method1['signature']])
+                    row_changes.append(
+                        [
+                            method1['class_name'],
+                            '',
+
+                            method1['name'],
+                            '',
+
+                            method1['body'],
+                            '',
+
+                            method1['modifiers'],
+                            '',
+
+                            method1['return_type'],
+                            '',
+
+                            method1['parameters'],
+                            '',
+
+                            method1['signature'],
+                            '',
+
+                            method1['signature_no_mod'],
+                            '',
+                        ]
+                    )
 
             for containmethods in remaining_added:
-                row_changes.append(['',containmethods['body'],containmethods['name'],containmethods['signature']])
+                row_changes.append(
+                    [
+                        '',
+                        containmethods['class_name'],
 
-            for method1, method2,name,signature in row_changes:
+                        '',
+                        containmethods['name'],
+
+                        '',
+                        containmethods['body'],
+
+                        '',
+                        containmethods['modifiers'],
+
+                        '',
+                        containmethods['return_type'],
+
+                        '',
+                        containmethods['parameters'],
+
+                        '',
+                        containmethods['signature'],
+
+                        '',
+                        containmethods['signature_no_mod'],
+                    ]
+                )
+
+            for (
+                    method1_class, method2_class,
+                    method1_name, method2_name,
+                    method1, method2,
+                    method1_modifiers, method2_modifiers,
+                    method1_return_type, method2_return_type,
+                    method1_param, method2_param,
+                    method1_signature, method2_signature,
+                    method1_signature_no_mod, method2_signature_no_mod,
+                ) in row_changes:
                 expanded_data.append({
                     **row.to_dict(),
-                    "total_methods_before": total_methods_before,
-                    "total_methods_after": total_methods_after,
+                    'total_methods_before': total_methods_before,
+                    'total_methods_after': total_methods_after,
+
+                    'class_before': method1_class,
+                    'class_after': method2_class,
+
+                    'method_before_name' : method1_name,
+                    'method_after_name' : method2_name,
+
                     'method_before': method1,
                     'method_after': method2,
+
                     'method_diff': get_diff(method1, method2),
-                    'method_name' : name,
-                    'method_signature' : signature,
+
+                    'method_before_modifiers' : method1_modifiers,
+                    'method_after_modifiers' : method2_modifiers,
+
+                    'method_before_return_type' : method1_return_type,
+                    'method_after_return_type' : method2_return_type,
+
+                    'method_before_parameters' : method1_param,
+                    'method_after_parameters' : method2_param,
+
+                    'method_before_signature' : method1_signature,
+                    'method_after_signature' : method2_signature,
+
+                    'method_before_signature_no_mod' : method1_signature_no_mod,
+                    'method_after_signature_no_mod' : method2_signature_no_mod,
                 })
 
             # if (index % 1000 == 0):
@@ -199,30 +382,68 @@ def process_and_expand_data(data):
             import traceback
             traceback.print_exc()
             print(e)
-            print('Err at index:',count)
+            print('Err at index:', index)
             print('--->')
-        count += 1
+            errors.append(index)
+
+            # break
+
+            with open(f'data/errors_method.txt', 'w') as file:
+                for error in errors:
+                    file.write(f'{error}\n')# break
     # data['total_methods_before'] = total_methods_before
     # data['total_methods_after'] = total_methods_after
     # data.to_parquet('/drive2/phatnt/zTrans/data/no_comment_dataset.parquet')
     expanded_df = pd.DataFrame(expanded_data)
-    # with open(f'tmp.txt', 'w+') as file:
-    #     file.write(t)
+
+    with open(f'data/errors_method.txt', 'w') as file:
+        for error in errors:
+            file.write(f'{error}\n')
+
+    with open(f'data/nested_class.txt', 'w') as file:
+        for nested in nested_class:
+            file.write(f'{nested}\n')
 
     return expanded_df
 
 def main():
     print('Start to get data:')
-    data = pd.read_parquet('no_comment_dataset.parquet')
+    data_prefix = 'data'
+    # data = pd.read_parquet('no_comment_dataset.parquet')
+    data = pd.read_parquet(f'{data_prefix}/migration_others_class_code_no_import.parquet')
     expanded_data = process_and_expand_data(data)
-    expanded_data = expanded_data.drop(['startCode','endCode', 'repoSplitName', 'repoOwner', 'diff', 'total_added', 'total_removed', 'total_removed', 'total_position', 'detailed_changes', 'lib_percentage',
-       'annotation_change', 'diff_cleaned'],axis=1)
+    dropped_columns = ['startCode', 'endCode',
+                       'repoSplitName', 'repoOwner', 'diff', 'total_added', 'total_removed', 'total_removed', 'total_position',
+                       'detailed_changes', 'lib_percentage', 'diff_cleaned',
+    ]
+    # expanded_data = expanded_data.drop(['startCode','endCode', 'repoSplitName', 'repoOwner', 'diff',
+    #                                     'total_added', 'total_removed', 'total_removed', 'total_position',
+    #                                     'detailed_changes', 'lib_percentage',
+    #                                     'diff_cleaned'], axis = 1)
+
+    dropped_columns = set(dropped_columns) & set(expanded_data.columns)
+    expanded_data = expanded_data.drop(dropped_columns, axis = 1)
+
+    start_time = time.time()
+    expanded_data.to_parquet(f'data/migration_others_method.parquet', engine = 'pyarrow')
+    end_time = time.time()
+    print(f'Finished in {(end_time - start_time):.2f} seconds')
 
     expanded_data.reset_index(drop = True)
     expanded_data['id'] = expanded_data.index
 
-    expanded_data.to_parquet('data_method_treesitter1.parquet')
+    dropped_columns = ['startCode_cleaned', 'endCode_cleaned',]
+    dropped_columns = set(dropped_columns) & set(expanded_data.columns)
+
+    expanded_data = expanded_data.drop(dropped_columns, axis = 1)
+
+    start_time = time.time()
+    expanded_data.to_parquet(f'data/migration_others_method_no_code.parquet', engine = 'pyarrow')
+    end_time = time.time()
+    print(f'Finished in {(end_time - start_time):.2f} seconds')
+
     print(len(expanded_data))
+
 main()
 
 # data = pd.read_parquet('/drive2/phatnt/zTrans/data/data_method.parquet')
