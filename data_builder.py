@@ -20,7 +20,8 @@ data_prefix: str = 'data'
 repo_prefix: str = f'{data_prefix}/repos'
 
 parser = argparse.ArgumentParser(description = 'Process a file.')
-parser.add_argument('--filename', nargs = '?', default = 'sampled_no_code.parquet', help = 'The name of the file to process')
+parser.add_argument('--filename', nargs = '?', default = 'migration_others.parquet', help = 'The name of the file to process')
+parser.add_argument('--filename_special', nargs = '?', default = 'specials.parquet', help = 'The name of the file to process')
 parser.add_argument('--output', nargs = '?', default = 'sampled_code.parquet', help = 'The name of the file to output')
 args = parser.parse_args()
 
