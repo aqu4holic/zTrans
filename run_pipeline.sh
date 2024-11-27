@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+if [ ! -d "data" ]; then
+    # echo "Creating data/ directory..."
+    mkdir -p data
+fi
+
 input_file="migration_others_dataset_cutoff_test_512.parquet"
 output_file="migration_others_dataset_cutoff_test_512_output.parquet"
 dataset_id="blackwhite1337/zTrans_dataset_512"

@@ -19,3 +19,4 @@ pyarrow
 tree-sitter
 tree-sitter-java
 tree-sitter-languages
+python-dotenv
